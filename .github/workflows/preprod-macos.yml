@@ -1,0 +1,83 @@
+name: daedalus-preprod-macos
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: macOS runner
+        type: choice
+        options: [macos-15, macos-15-xlarge]
+        default: macos-15
+      full_build:
+        description: Run the full build (otherwise plan/dry-run only)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daedalus-preprod-macos
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 360
+    steps:
+      - name: Checkout Daedalus 11.6.2
+        uses: actions/checkout@v4
+        with:
+          repository: input-output-hk/daedalus
+          ref: 11.6.2
+          fetch-depth: 1
+
+      - name: Report and reclaim disk
+        run: |
+          set -euo pipefail
+          df -h /
+          keep=$(xcode-select -p | sed 's#/Contents/Developer##')
+          echo "Keeping $keep"
+          for app in /Applications/Xcode*.app; do
+            [ -e "$app" ] || continue
+            [ "$app" = "$keep" ] || sudo rm -rf "$app"
+          done
+          sudo rm -rf "$HOME/Library/Developer/CoreSimulator" \
+                      "$HOME/Library/Developer/Xcode/DerivedData" \
+                      "$HOME/Library/Caches/Homebrew" || true
+          df -h /
+
+      - uses: DeterminateSystems/nix-installer-action@main
+        with:
+          extra-conf: |
+            trusted-users = runner
+            substituters = https://cache.iog.io https://cache.nixos.org/
+            trusted-public-keys = hydra.iohk.io:f/Ea+s+dFdN+3Y/G+FDgSq+a5NEWhJGzdjvKNGv0/EQ= cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+            allow-import-from-derivation = true
+
+      - name: Plan (fetched vs built)
+        run: |
+          set -o pipefail
+          nix build -L .#installer-preprod --dry-run 2>&1 | tee plan.log
+          grep -E 'will be built|will be fetched' plan.log || true
+          df -h /; du -sh /nix 2>/dev/null || true
+
+      - name: Full build
+        if: ${{ inputs.full_build }}
+        run: nix build -L .#installer-preprod --out-link result
+
+      - name: Stage artifact
+        if: ${{ inputs.full_build }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifact
+          cp result/*.pkg artifact/
+          shasum -a 256 artifact/*.pkg | tee artifact/SHA256SUMS
+
+      - name: Upload .pkg
+        if: ${{ inputs.full_build }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: daedalus-preprod-aarch64-darwin
+          path: artifact/
+          if-no-files-found: error
+          retention-days: 14
