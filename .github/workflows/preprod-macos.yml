@@ -71,7 +71,7 @@ jobs:
           set -euo pipefail
           mkdir -p artifact
           cp result/*.pkg artifact/
-          shasum -a 256 artifact/*.pkg | tee artifact/SHA256SUMS
+          ( cd artifact && shasum -a 256 *.pkg > SHA256SUMS )
 
       - name: Upload .pkg
         if: ${{ inputs.full_build }}
